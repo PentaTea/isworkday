@@ -1,0 +1,14 @@
+{
+  "name": "@isworkday/cli",
+  "version": "0.0.0",
+  "description": "Command-line predicate: is DATE a statutory workday in REGION? One word, one exit code, official calendars that update themselves. Only cn (mainland China) so far.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/PentaTea/isworkday.git" },
+  "homepage": "https://github.com/PentaTea/isworkday#readme",
+  "bin": { "isworkday": "bin/isworkday.js" },
+  "files": ["bin", "vendor", "NOTICE"],
+  "os": ["darwin", "linux"],
+  "cpu": ["x64", "arm64"],
+  "engines": { "node": ">=18" },
+  "publishConfig": { "access": "public" }
+}

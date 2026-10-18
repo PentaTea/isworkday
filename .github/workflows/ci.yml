@@ -1,0 +1,39 @@
+name: ci
+on: { push: { branches: [main] }, pull_request: {} }
+permissions: { contents: read }
+
+jobs:
+  test:
+    strategy: { matrix: { os: [ubuntu-latest, macos-latest] } }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6 # the oldest supported Go
+        with: { go-version-file: go.mod, cache: false } # no go.sum to cache on
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...
+
+  package: # the whole packaging chain, on every PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v6 # as release.yml
+        with: { go-version: stable, check-latest: true, cache: false }
+      - uses: goreleaser/goreleaser-action@v7
+        with: { distribution: goreleaser, version: "~> v2.18", args: release --snapshot --clean --skip=publish }
+        env: { HOMEBREW_TAP_DEPLOY_KEY: snapshot } # the template must resolve; a snapshot never pushes
+      - run: file dist/isworkday_linux_amd64_v1/isworkday | grep -q 'statically linked'
+      - run: test -s dist/homebrew/Casks/isworkday.rb && grep -q 'binary "isworkday"' dist/homebrew/Casks/isworkday.rb # a broken cask config is skipped silently
+      - name: Wheels and npm package from the snapshot archives
+        run: |
+          mkdir -p bin npm/vendor
+          for a in Linux-x86_64 Linux-aarch64 Darwin-x86_64 Darwin-arm64; do
+            tar -xzf "dist/isworkday-$a.tar.gz" -O isworkday > "bin/isworkday-$a"
+          done
+          python3 -I pypi/mkwheels.py 0.0.0 bin wheels
+          test "$(find wheels -name '*.whl' | wc -l)" -eq 4
+          cp bin/* npm/vendor/
+          cp README.md LICENSE NOTICE npm/
+          cd npm && npm pack --dry-run

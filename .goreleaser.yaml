@@ -1,0 +1,51 @@
+version: 2
+project_name: isworkday
+
+builds:
+  - binary: isworkday
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  # isworkday-$(uname -s)-$(uname -m).tar.gz
+  - name_template: '{{ .ProjectName }}-{{ title .Os }}-{{ if eq .Arch "amd64" }}x86_64{{ else if eq .Os "linux" }}aarch64{{ else }}{{ .Arch }}{{ end }}'
+    files: [LICENSE, NOTICE]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true
+
+release:
+  github: { owner: PentaTea, name: isworkday }
+  replace_existing_artifacts: true # a failed run can be re-run
+
+homebrew_casks:
+  - name: isworkday
+    homepage: https://github.com/PentaTea/isworkday
+    description: "Command-line predicate: is DATE a statutory workday in REGION? (cn only, so far)"
+    license: MIT
+    repository:
+      owner: PentaTea
+      name: homebrew-tap
+      git:
+        url: git@github.com:PentaTea/homebrew-tap.git
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}" # empty ⇒ the cask is silently skipped; release.yml refuses it
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    custom_block: | # the macOS minimum of Go's darwin binaries; raise it when Go does
+      on_macos do
+        depends_on macos: :ventura
+      end
+    hooks:
+      post:
+        install: | # v2.18 syntax; on v2.19+ switch to install_steps
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}"]
+          end

@@ -1,0 +1,94 @@
+name: release
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"] # vX.Y.Z only
+permissions: { contents: read }
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v6
+        with: { go-version: stable, check-latest: true, cache: false }
+      - name: Refuse an empty tap key
+        run: test -n "$HOMEBREW_TAP_DEPLOY_KEY"
+        env: { HOMEBREW_TAP_DEPLOY_KEY: "${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}" }
+      - uses: goreleaser/goreleaser-action@v7
+        with: { distribution: goreleaser, version: "~> v2.18", args: release --clean }
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          HOMEBREW_TAP_DEPLOY_KEY: "${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}"
+
+  npm:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with: { node-version: 24, registry-url: https://registry.npmjs.org }
+      - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
+      - name: Vendor the released binaries
+        run: |
+          mkdir -p npm/vendor
+          gh release download "$GITHUB_REF_NAME" --pattern '*.tar.gz' --dir dist
+          for a in Linux-x86_64 Linux-aarch64 Darwin-x86_64 Darwin-arm64; do
+            tar -xzf "dist/isworkday-$a.tar.gz" -O isworkday > "npm/vendor/isworkday-$a"
+            chmod 755 "npm/vendor/isworkday-$a"
+          done
+          cp README.md LICENSE NOTICE npm/
+        env: { GH_TOKEN: "${{ github.token }}" }
+      - run: cd npm && npm version --no-git-tag-version "${GITHUB_REF_NAME#v}" && npm publish
+
+  pypi:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build platform wheels from the released binaries
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern '*.tar.gz' --dir dist
+          mkdir -p bin
+          for a in Linux-x86_64 Linux-aarch64 Darwin-x86_64 Darwin-arm64; do
+            tar -xzf "dist/isworkday-$a.tar.gz" -O isworkday > "bin/isworkday-$a"
+          done
+          python3 -I pypi/mkwheels.py "${GITHUB_REF_NAME#v}" bin wheels
+        env: { GH_TOKEN: "${{ github.token }}" }
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with: { packages-dir: wheels, skip-existing: true }
+
+  smoke:
+    needs: [goreleaser, npm, pypi]
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest] }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: curl one-liner
+        run: |
+          curl -fsSL "https://github.com/PentaTea/isworkday/releases/latest/download/isworkday-$(uname -s)-$(uname -m).tar.gz" | tar -xzC "$RUNNER_TEMP" isworkday
+          "$RUNNER_TEMP/isworkday" --version | grep -F "isworkday ${GITHUB_REF_NAME#v}"
+          rc=0; "$RUNNER_TEMP/isworkday" cn 2026-10-01 || rc=$?; test $rc -eq 1
+          "$RUNNER_TEMP/isworkday" cn 2026-10-10
+      - name: brew
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: |
+          brew install pentatea/tap/isworkday
+          isworkday --version | grep -F "isworkday ${GITHUB_REF_NAME#v}"
+          ! xattr -p com.apple.quarantine "$(readlink -f "$(command -v isworkday)")"
+      - name: uvx
+        if: ${{ !cancelled() }}
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          for _ in 1 2 3 4 5; do "$HOME/.local/bin/uvx" --refresh "isworkday@${GITHUB_REF_NAME#v}" --version && break; sleep 60; done
+          "$HOME/.local/bin/uvx" "isworkday@${GITHUB_REF_NAME#v}" --version | grep -F "isworkday ${GITHUB_REF_NAME#v}"
+          rc=0; "$HOME/.local/bin/uvx" "isworkday@${GITHUB_REF_NAME#v}" cn 2026-10-01 || rc=$?; test $rc -eq 1
+      - name: npx
+        if: ${{ !cancelled() }}
+        run: |
+          for _ in 1 2 3 4 5; do npx --prefer-online -y "@isworkday/cli@${GITHUB_REF_NAME#v}" --version && break; sleep 60; done
+          rc=0; npx -y "@isworkday/cli@${GITHUB_REF_NAME#v}" cn 2026-10-01 || rc=$?; test $rc -eq 1

@@ -1,0 +1,34 @@
+name: data
+on:
+  schedule:
+    - cron: "17 */6 * * *" # off the hour: on-the-hour runs get dropped
+  workflow_dispatch:
+permissions:
+  contents: write # commits data/cn.json
+concurrency: data
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: main } # the tip at run time, not at queue time
+      - uses: actions/setup-go@v6
+        with: { go-version-file: go.mod, cache: false } # no go.sum to cache on
+      - run: git clone --depth 1 https://github.com/NateScarlet/holiday-cn "$RUNNER_TEMP/holiday-cn"
+      - name: Merge upstreams into data/cn.json
+        run: |
+          set -o pipefail
+          go run ./pipeline -hcn "$RUNNER_TEMP/holiday-cn" | tee "$RUNNER_TEMP/summary.txt"
+      - name: Commit and push
+        if: ${{ !cancelled() }} # exit 2 (deadline) has still written the file
+        run: |
+          git add data/cn.json
+          git diff --cached --quiet && exit 0
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "data: $(head -1 "$RUNNER_TEMP/summary.txt")"
+          git push
+          curl -fsS --max-time 20 "https://purge.jsdelivr.net/gh/PentaTea/isworkday@main/data/cn.json" >/dev/null \
+            || echo "::warning::jsDelivr purge failed"
